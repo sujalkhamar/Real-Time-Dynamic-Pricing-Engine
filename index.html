@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no"
+    />
+    <title>Dynamic Pricing Engine - Real-Time Dashboard</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.58.0/build/stlite.css"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.58.0/build/stlite.js"></script>
+    <script>
+      stlite.mount(
+        {
+          requirements: ["pandas", "xgboost", "scikit-learn", "joblib"],
+          entrypoint: "app.py",
+          files: {
+            "app.py": `import time
+import warnings
+import pandas as pd
+import streamlit as st
+from src.data_cleaning import load_and_clean_data
+from src.model import load_model_artifacts, train_model
+from src.pricing import calculate_demand, cancellation_risk, dynamic_price
+
+warnings.filterwarnings("ignore")
+st.set_page_config(page_title="Dynamic Pricing Engine", layout="wide")
+
+@st.cache_data
+def get_data():
+    return load_and_clean_data("data/hotel_bookings.csv")
+
+@st.cache_resource
+def get_model_artifacts():
+    try:
+        return load_model_artifacts("model.pkl")
+    except Exception:
+        df = get_data()
+        return train_model(df)
+
+def format_currency(value):
+    return f"Rs. {value:,.2f}"
+
+def explain_recommendation(demand_score, cancel_risk, season_factor, uplift):
+    reasons = []
+    if demand_score >= 0.5: reasons.append("high booking demand")
+    elif demand_score <= 0.2: reasons.append("soft demand conditions")
+    if cancel_risk >= 0.3: reasons.append("elevated cancellation risk")
+    if season_factor >= 0.3: reasons.append("peak season effect")
+    if not reasons: reasons.append("balanced market conditions")
+    action = "increase" if uplift > 0 else "reduce" if uplift < 0 else "keep"
+    return f"Recommended to {action} price because of {', '.join(reasons)}."
+
+def build_row(model, feature_columns, row, booking_number):
+    features = pd.DataFrame([[row[col] for col in feature_columns]], columns=feature_columns)
+    base_price = float(model.predict(features)[0])
+    demand_score = calculate_demand(row)
+    cancel_risk = cancellation_risk(row)
+    season_factor = row["season_factor"]
+    dynamic_value = dynamic_price(base_price, demand_score, cancel_risk, season_factor)
+    actual_adr = float(row["adr"])
+    fixed_price = round(base_price * 1.05, 2)
+    error = actual_adr - base_price
+    dynamic_gap = dynamic_value - actual_adr
+    recommendation = explain_recommendation(demand_score, cancel_risk, season_factor, dynamic_value - base_price)
+    return {
+        "booking": booking_number,
+        "base_price": round(base_price, 2),
+        "fixed_price": fixed_price,
+        "dynamic_price": round(dynamic_value, 2),
+        "actual_adr": round(actual_adr, 2),
+        "uplift": round(dynamic_value - base_price, 2),
+        "prediction_error": round(error, 2),
+        "abs_error": round(abs(error), 2),
+        "dynamic_gap": round(dynamic_gap, 2),
+        "demand_score": round(demand_score, 2),
+        "cancel_risk": round(cancel_risk, 2),
+        "season_factor": round(season_factor, 2),
+        "recommendation": recommendation,
+    }
+
+st.title("Real-Time Hotel Dynamic Pricing Engine")
+st.caption("Predictive pricing dashboard with evaluation, scenario testing, strategy comparison, and explainable recommendations.")
+
+df = get_data()
+artifacts = get_model_artifacts()
+model = artifacts["model"]
+feature_columns = artifacts["features"]
+metrics = artifacts["metrics"]
+importance_df = artifacts["feature_importance"]
+
+st.sidebar.header("Controls")
+rows = st.sidebar.slider("Rows to simulate", 10, 100, 50)
+speed = st.sidebar.slider("Speed", 0.0, 1.0, 0.2, 0.1)
+
+with st.expander("Methodology", expanded=False):
+    st.write("- Dataset: Hotel booking records from data/hotel_bookings.csv\\n- Features: lead_time, total_guests, stay_length\\n- Model: XGBoost Regressor")
+
+if metrics:
+    st.subheader("Model Performance")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("MAE", metrics["mae"])
+    m2.metric("RMSE", metrics["rmse"])
+    m3.metric("R2 Score", metrics["r2"])
+
+overview_left, overview_right = st.columns([1.1, 1.9])
+with overview_left:
+    st.subheader("Feature Importance")
+    if importance_df is not None:
+        st.bar_chart(importance_df.set_index("feature"))
+with overview_right:
+    st.subheader("Scenario Testing")
+    c1, c2, c3 = st.columns(3)
+    s_lead = c1.slider("Lead Time", 0, 365, 30)
+    s_guests = c2.slider("Total Guests", 1, 6, 2)
+    s_stay = c3.slider("Stay Length", 1, 14, 3)
+    s_season_choice = st.selectbox("Season", ["Regular", "Peak"])
+    s_row = pd.Series({"lead_time": s_lead, "total_guests": s_guests, "stay_length": s_stay, "season_factor": 0.3 if s_season_choice == "Peak" else 0.1, "adr": 0.0})
+    s_out = build_row(model, feature_columns, s_row, 1)
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("Predicted Base Price", format_currency(s_out["base_price"]))
+    sc2.metric("Dynamic Price", format_currency(s_out["dynamic_price"]))
+    sc3.metric("Price Change", f"{s_out['uplift']:+.2f}")
+    st.info(s_out["recommendation"])
+
+st.subheader("Live Simulation")
+placeholder = st.empty()
+price_chart, demand_chart, simulation_rows = [], [], []
+
+for i in range(rows):
+    row = df.iloc[i]
+    row_res = build_row(model, feature_columns, row, i + 1)
+    price_chart.append({"Booking": row_res["booking"], "Base Price": row_res["base_price"], "Dynamic Price": row_res["dynamic_price"], "Actual ADR": row_res["actual_adr"]})
+    demand_chart.append({"Booking": row_res["booking"], "Demand Score": row_res["demand_score"]})
+    simulation_rows.append(row_res)
+    sim_df = pd.DataFrame(simulation_rows)
+    with placeholder.container():
+        sum_cols = st.columns(4)
+        sum_cols[0].metric("Base Price", format_currency(row_res["base_price"]))
+        sum_cols[1].metric("Demand", f"{row_res['demand_score']:.2f}")
+        sum_cols[2].metric("Cancel Risk", f"{row_res['cancel_risk']:.2f}")
+        sum_cols[3].metric("Dynamic Price", format_currency(row_res["dynamic_price"]), f"{row_res['uplift']:+.2f}")
+        st.success(row_res["recommendation"])
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.subheader("Price Comparison")
+            st.line_chart(pd.DataFrame(price_chart).set_index("Booking"))
+        with ch2:
+            st.subheader("Demand Trend")
+            st.line_chart(pd.DataFrame(demand_chart).set_index("Booking"))
+    if speed > 0: time.sleep(speed)
+`,
+            "src/data_cleaning.py": `import pandas as pd
+def get_season(month):
+    peak = ['July', 'August', 'December']
+    return 0.3 if month in peak else 0.1
+def load_and_clean_data(path):
+    df = pd.read_csv(path)
+    if 'company' in df.columns: df = df.drop(columns=['company'])
+    df['agent'] = df['agent'].fillna(-1)
+    df['country'] = df['country'].fillna("Unknown")
+    df['children'] = df['children'].fillna(0)
+    df['total_guests'] = df['adults'] + df['children'] + df['babies']
+    df['stay_length'] = df['stays_in_weekend_nights'] + df['stays_in_week_nights']
+    df['season_factor'] = df['arrival_date_month'].apply(get_season)
+    return df`,
+            "src/model.py": `import joblib
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
+MODEL_FEATURES = ["lead_time", "total_guests", "stay_length"]
+TARGET_COLUMN = "adr"
+def build_model():
+    return XGBRegressor(n_estimators=200, learning_rate=0.05, max_depth=5, random_state=42)
+def train_model(df):
+    X, y = df[MODEL_FEATURES], df[TARGET_COLUMN]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = build_model()
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+    rmse = mean_squared_error(y_test, predictions) ** 0.5
+    metrics = {"mae": round(mean_absolute_error(y_test, predictions), 2), "rmse": round(rmse, 2), "r2": round(r2_score(y_test, predictions), 3)}
+    feature_importance = pd.DataFrame({"feature": MODEL_FEATURES, "importance": model.feature_importances_}).sort_values("importance", ascending=False).reset_index(drop=True)
+    artifacts = {"model": model, "features": MODEL_FEATURES, "metrics": metrics, "feature_importance": feature_importance}
+    joblib.dump(artifacts, "model.pkl")
+    return artifacts
+def load_model_artifacts(path="model.pkl"):
+    saved_object = joblib.load(path)
+    if isinstance(saved_object, dict) and "model" in saved_object: return saved_object
+    return {"model": saved_object, "features": MODEL_FEATURES, "metrics": None, "feature_importance": None}`,
+            "src/pricing.py": `def calculate_demand(row):
+    demand = 0
+    if row['lead_time'] < 20: demand += 0.3
+    if row['total_guests'] >= 3: demand += 0.2
+    if row['stay_length'] > 4: demand += 0.2
+    return demand
+def cancellation_risk(row):
+    return 0.4 if row['lead_time'] > 100 else 0.1
+def dynamic_price(base_price, demand_score, cancellation_risk, season_factor):
+    demand_impact = base_price * demand_score
+    cancellation_impact = base_price * cancellation_risk * 0.3
+    seasonal_impact = base_price * season_factor
+    new_price = base_price + demand_impact + seasonal_impact - cancellation_impact
+    return round(new_price, 2)`,
+          },
+          filesFromUrl: {
+            "data/hotel_bookings.csv": "./data/hotel_bookings.csv",
+            "model.pkl": "./model.pkl"
+          }
+        },
+        document.getElementById("root")
+      );
+    </script>
+  </body>
+</html>
