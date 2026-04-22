@@ -112,6 +112,11 @@ with st.expander("Methodology", expanded=False):
         """
     )
 
+st.divider()
+st.subheader("Live Simulation")
+simulation_placeholder = st.empty()
+st.divider()
+
 if metrics:
     st.subheader("Model Performance")
     metric_col1, metric_col2, metric_col3 = st.columns(3)
@@ -204,8 +209,6 @@ with strategy_section:
     st.bar_chart(strategy_summary.set_index("strategy")[["average_price"]])
     st.dataframe(strategy_summary, use_container_width=True, hide_index=True)
 
-st.subheader("Live Simulation")
-placeholder = st.empty()
 price_chart = []
 demand_chart = []
 simulation_rows = []
@@ -232,7 +235,7 @@ for i in range(rows):
     high_demand_count = int((simulation_df["demand_score"] >= 0.5).sum())
     risky_bookings = int((simulation_df["cancel_risk"] >= 0.3).sum())
 
-    with placeholder.container():
+    with simulation_placeholder.container():
         summary_cols = st.columns(4)
         summary_cols[0].metric("Base Price", format_currency(row_result["base_price"]))
         summary_cols[1].metric("Demand", f"{row_result['demand_score']:.2f}")
@@ -266,19 +269,31 @@ for i in range(rows):
             st.line_chart(pd.DataFrame(demand_chart).set_index("Booking"))
 
         st.subheader("Simulation Table")
+        
+        display_df = simulation_df[
+            [
+                "booking",
+                "base_price",
+                "fixed_price",
+                "dynamic_price",
+                "actual_adr",
+                "uplift",
+                "prediction_error",
+                "recommendation",
+            ]
+        ].rename(columns={
+            "booking": "Booking ID",
+            "base_price": "Base Price",
+            "fixed_price": "Fixed Price",
+            "dynamic_price": "Dynamic Price",
+            "actual_adr": "Actual ADR",
+            "uplift": "Uplift",
+            "prediction_error": "Pred. Error",
+            "recommendation": "Recommendation"
+        }).sort_values(by="Booking ID", ascending=False)
+        
         st.dataframe(
-            simulation_df[
-                [
-                    "booking",
-                    "base_price",
-                    "fixed_price",
-                    "dynamic_price",
-                    "actual_adr",
-                    "uplift",
-                    "prediction_error",
-                    "recommendation",
-                ]
-            ],
+            display_df,
             use_container_width=True,
             hide_index=True,
         )
